@@ -1,4 +1,5 @@
 import os
+import heapq
 import regex as re
 
 from collections import Counter, defaultdict
@@ -8,6 +9,53 @@ from cs336_basics.pretokenization_example import find_chunk_boundaries
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
+class HeapEntry():
+
+    __slots__ = ("count", "pair")
+
+    def __init__(self, count:int, pair:bytes):
+        self.count = count
+        self.pair = pair
+
+    def __lt__(self, other:"HeapEntry"):
+        if self.count != other.count:
+            return self.count > other.count
+
+        return self.pair > other.pair
+
+class PairMaxHeap:
+
+    def __init__(self, pairs_counter):
+        self.heap = [
+            HeapEntry(count, pair) 
+            for pair, count in pairs_counter.items()
+            if count > 0
+        ]
+        heapq.heapify(self.heap)
+
+    def push(self, pair, count):
+        heapq.heappush(self.heap, HeapEntry(count, pair))
+
+    def pop_max(self, pairs_counter):
+        while len(self.heap):
+            entry = heapq.heappop(self.heap)
+            current_count = pairs_counter.get(entry.pair)
+
+            if current_count == entry.count:
+                return entry.pair
+
+        return None
+
+    def maybe_rebuild(self, pairs_counter):
+        if len(self.heap) > 3 * len(pairs_counter) + 1 :
+            self.heap = [
+                HeapEntry(count, pair) 
+                for pair, count in pairs_counter.items()
+                if count > 0
+            ]
+            heapq.heapify(self.heap)
+
+    
 def init_vocab(special_tokens: list[str]):
     init_vacab = {}
     for i in range(256):
@@ -20,7 +68,7 @@ def init_vocab(special_tokens: list[str]):
 
 def create_chunks(input_path: str):
     with open(input_path, "rb") as f:
-        num_processes = 4
+        num_processes = 16
         boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
 
         # The following is a serial implementation, but you can parallelize this
@@ -33,7 +81,7 @@ def create_chunks(input_path: str):
 
 def prepare_data(chunks:list[str], special_tokens:list[str]):
     worker = partial(get_pretoken_counter, special_tokens=special_tokens)
-    with Pool(processes=4) as pool:
+    with Pool(processes=8) as pool:
         pretoken_counter_list = pool.map(worker, chunks)
 
     pretoken_counter = Counter()
@@ -45,7 +93,18 @@ def prepare_data(chunks:list[str], special_tokens:list[str]):
         for start, end in zip(token[:-1], token[1:]):
             pairs_counter[(start, end)] += count
 
-    return pairs_counter, pretoken_counter
+    id2token = dict()
+    id2count = defaultdict(int)
+    pairs2id = defaultdict(set)
+
+    for id, (token, count) in enumerate(pretoken_counter.items()):
+        id2token[id] = token
+        id2count[id] = count
+
+        for start, end in zip(token[:-1], token[1:]):
+            pairs2id[(start, end)].add(id)
+
+    return pairs_counter, pretoken_counter, id2token, id2count, pairs2id
 
 
 def get_pretoken_counter(chunk: str, special_tokens: list[str]):
@@ -62,23 +121,28 @@ def get_pretoken_counter(chunk: str, special_tokens: list[str]):
     return local_pretoken_counter
 
 
-def merge(vacab:dict[int, bytes], merges:list[(bytes, bytes)], pairs_counter:Counter[tuple], pretoken_counter:Counter[tuple]):
-    selected_pair = max(pairs_counter, key=lambda pair:(pairs_counter.get(pair), pair))
+def merge(vacab:dict[int, tuple[bytes]], merges:list[(bytes, bytes)], pairs_counter:Counter[tuple], pretoken_counter:Counter[tuple], 
+          heap:PairMaxHeap, id2token:dict[int, tuple[bytes]], id2count:dict[int, int], pairs2id:dict[tuple[bytes], int]):
 
-    selected_token = []
-    for token in pretoken_counter:
-        for start, end in zip(token[:-1], token[1:]):
-            if (start, end) == selected_pair:
-                selected_token.append(token)
-                break
-    
-    for token in selected_token:
-        count = pretoken_counter.get(token)
+    selected_pair = heap.pop_max(pairs_counter)
+
+    selected_id = list(pairs2id[selected_pair])
+    selected_token = [id2token[id] for id in selected_id]
+
+    changed_pair = Counter() 
+    for k, token in enumerate(selected_token):
+        idx = selected_id[k]
+        count = id2count[idx]
         for i in range(len(token)-1):
             pairs_counter[(token[i], token[i+1])] -= count
-    
-    for token in selected_token:
-        count = pretoken_counter.get(token)
+            changed_pair[(token[i], token[i+1])] -= count
+            pairs2id[(token[i], token[i+1])].discard(idx)
+
+    for k, token in enumerate(selected_token):
+
+        idx = selected_id[k]
+        count = id2count[idx]
+
         new_token = []
         i=0
         while i < len(token):
@@ -91,9 +155,22 @@ def merge(vacab:dict[int, bytes], merges:list[(bytes, bytes)], pairs_counter:Cou
 
         for i in range(len(new_token)-1):
             pairs_counter[(new_token[i], new_token[i+1])] += count
+            changed_pair[(new_token[i], new_token[i+1])] += count
+            pairs2id[(new_token[i], new_token[i+1])].add(idx)
         
-        pretoken_counter.pop(token, None)
-        pretoken_counter[tuple(new_token)] += count
+        id2token[idx] = tuple(new_token)
+
+    for pair, delta in changed_pair.items():
+        current_count = pairs_counter.get(pair)
+
+        if current_count == 0:
+            del pairs_counter[pair]
+
+        elif delta != 0:
+            heap.push(pair, current_count)
+
+
+    heap.maybe_rebuild(pairs_counter)
 
     vacab[len(vacab)] = (selected_pair[0] + selected_pair[1])
     merges.append(selected_pair)
@@ -110,10 +187,11 @@ def train_bpe(
     merges = []
     vocab = init_vocab(special_tokens)
     chunks = create_chunks(input_path=input_path)
-    pairs_counter, pretoken_counter = prepare_data(chunks = chunks, special_tokens=special_tokens)
+    pairs_counter, pretoken_counter, id2token, id2count, pairs2id = prepare_data(chunks = chunks, special_tokens=special_tokens)
 
+    heap = PairMaxHeap(pairs_counter)
     while len(vocab) < vocab_size:
-        merge(vocab, merges, pairs_counter, pretoken_counter)
+        merge(vocab, merges, pairs_counter, pretoken_counter, heap, id2token, id2count, pairs2id)
 
     return vocab, merges
     
