@@ -66,23 +66,25 @@ def init_vocab(special_tokens: list[str]):
         init_vacab[i] = token_bytes
     return init_vacab
 
-def create_chunks(input_path: str):
+def create_boundaries(input_path: str):
     with open(input_path, "rb") as f:
-        num_processes = 16
+        num_processes = 32
         boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
+        return ((input_path, start, end) for start, end in zip(boundaries[:-1], boundaries[1:]))
 
+def read_chunk(input_path, start, end):
+    with open(input_path, "rb") as f:
         # The following is a serial implementation, but you can parallelize this
         # by sending each start/end pair to a set of processes.
-        for start, end in zip(boundaries[:-1], boundaries[1:]):
-            f.seek(start)
-            chunk = f.read(end - start).decode("utf-8", errors="ignore")
-            yield chunk
+        f.seek(start)
+        chunk = f.read(end - start).decode("utf-8", errors="ignore")
+        return chunk
 
-
-def prepare_data(chunks:list[str], special_tokens:list[str]):
+def prepare_data(chunks_boundaires:list[tuple], special_tokens:list[str]):
     worker = partial(get_pretoken_counter, special_tokens=special_tokens)
-    with Pool(processes=8) as pool:
-        pretoken_counter_list = pool.map(worker, chunks)
+    with Pool(processes=16) as pool:
+
+        pretoken_counter_list = pool.map(worker, chunks_boundaires)
 
     pretoken_counter = Counter()
     for counter in pretoken_counter_list:
@@ -107,7 +109,8 @@ def prepare_data(chunks:list[str], special_tokens:list[str]):
     return pairs_counter, pretoken_counter, id2token, id2count, pairs2id
 
 
-def get_pretoken_counter(chunk: str, special_tokens: list[str]):
+def get_pretoken_counter(chunk_boundairy: tuple, special_tokens: list[str]):
+    chunk = read_chunk(*chunk_boundairy)
     local_pretoken_counter = Counter()
     clean_chunk_list = re.split('|'.join([re.escape(token) for token in special_tokens]), chunk)
 
@@ -186,8 +189,8 @@ def train_bpe(
 
     merges = []
     vocab = init_vocab(special_tokens)
-    chunks = create_chunks(input_path=input_path)
-    pairs_counter, pretoken_counter, id2token, id2count, pairs2id = prepare_data(chunks = chunks, special_tokens=special_tokens)
+    chunks_boundaires = create_boundaries(input_path=input_path)
+    pairs_counter, pretoken_counter, id2token, id2count, pairs2id = prepare_data(chunks_boundaires, special_tokens=special_tokens)
 
     heap = PairMaxHeap(pairs_counter)
     while len(vocab) < vocab_size:
