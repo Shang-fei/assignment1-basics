@@ -2,6 +2,7 @@ from collections.abc import Iterable
 from typing import Iterator
 
 import regex as re
+import pickle
 class Tokenizer:
 
     def __init__(self, vocab:dict[int, bytes], merges:list[tuple[bytes, bytes]], special_tokens:list[str]):
@@ -16,15 +17,15 @@ class Tokenizer:
         if special_tokens is not None:
             self.special_tokens = sorted(special_tokens, key=len, reverse=True)
 
-
+    @classmethod
     def from_files(cls, vocab_filepath:str, merges_filepath:str, special_tokens=None):
         with open(vocab_filepath, "rb") as f:
-            vocab = f.read()
+            vocab = pickle.load(f)
         
         with open(merges_filepath, 'rb') as f:
-            merges = f.read()
-
-        special_token = sorted(special_token, key=len, reverse=True)
+            merges = pickle.load(f)
+        
+        special_tokens = sorted(special_tokens, key=len, reverse=True)
         return cls(vocab, merges, special_tokens)
 
 

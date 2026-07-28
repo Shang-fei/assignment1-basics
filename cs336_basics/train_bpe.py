@@ -9,7 +9,7 @@ def train(input_path:str, vocab_size:int, special_tokens:list[str]):
     return vocab, merges
 
 if __name__ == "__main__":
-    input_path = "/home/shangfei/shang/cs336/assignment1-basics/data/TinyStoriesV2-GPT4-train.txt"
+    input_path = "/home/shangfei/shang/cs336/assignment1-basics/data/TinyStoriesV2-GPT4-valid.txt"
     vocab_size = 10000
     special_tokens = ["<|endoftext|>"]
 
@@ -22,9 +22,9 @@ if __name__ == "__main__":
     print(f"训练用时:{end - start}")
     print(f"CPU 峰值内存: {cpu_peak_gb:.3f} GB")
 
-    with open("../output/tiny_stores_vocab_train.pkl", "wb") as f:
+    with open("../output/tiny_stores_vocab_valid.pkl", "wb") as f:
         pickle.dump(vocab, f)
-    with open("../output/tiny_stores_merges_train.pkl", "wb") as f:
+    with open("../output/tiny_stores_merges_valid.pkl", "wb") as f:
         pickle.dump(merges, f)
     
     longest_token_id = max(vocab, key = lambda idx : len(vocab.get(idx)))
