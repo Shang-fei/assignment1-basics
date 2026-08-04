@@ -1,8 +1,11 @@
 import torch 
+import math
 import torch.nn as nn
 from torch import Tensor
 from einops import rearrange, einsum
 from jaxtyping import Bool, Float, Int
+from collections.abc import Callable, Iterable
+from typing import Optional
 
 from cs336_basics.utils import softmax
 
@@ -222,3 +225,39 @@ class TransformerLM(nn.Module):
         x = self.norm(x)
         x = self.ffn(x)
         return x
+
+class AdamW(torch.optim.Optimizer):
+
+    def __init__(self, params, lr, betas=(0.9, 0.999), weight_decay=0.01, eps=1e-8):
+        if lr < 0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        defaults = {"lr": lr, "beta1":betas[0], 'beta2':betas[1], "weight_decay":weight_decay, "eps":eps}
+        super().__init__(params, defaults)
+
+    def step(self, closure: Optional[Callable] = None):
+        loss = None if closure is None else closure()
+        for group in self.param_groups:
+            lr = group["lr"]  # Get the learning rate.
+            beta1 = group["beta1"]
+            beta2 = group["beta2"]
+            weight_decay = group["weight_decay"]
+            eps = group["eps"]
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+
+                state = self.state[p]  # Get state associated with p.
+                t = state.get("t", 0)  # Get iteration number from the state, or 0.
+                m = state.get("m", 0)
+                v = state.get('v', 0)
+
+                grad = p.grad.data  # Get the gradient of loss with respect to p.
+
+                state['m'] = beta1 * m + (1-beta1)*grad
+                state['v'] = beta2 * v + (1-beta2)*grad**2
+                state["t"] = t + 1  # Increment iteration number.
+
+                p.data -= weight_decay * lr * p.data
+                p.data -= lr * ((1 - beta2**state['t'])**0.5 / (1 - beta1**state['t'])) * (state['m'] / (state['v']**0.5 + eps))
+
+        return loss
