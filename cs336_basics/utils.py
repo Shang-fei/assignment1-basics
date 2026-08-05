@@ -1,5 +1,8 @@
 import torch
 import math
+import numpy as np
+import random
+
 from torch import Tensor
 from jaxtyping import Bool, Float, Int
 from einops import einsum
@@ -41,6 +44,34 @@ def gradient_clipping(parameters, max_l2_norm, eps=1e-6):
         for parameter in parameters:
             if parameter.grad is not None:
                 parameter.grad.data *= (max_l2_norm / (l2_norm + eps))
+
+def get_batch(dataset, batch_size, context_length, device):
+    inputs = np.zeros((batch_size, context_length))
+    targets = np.zeros((batch_size, context_length))
+
+    max_start = len(dataset) - context_length - 1
+    starts = np.random.randint(0, max_start + 1, size=batch_size)
+    for i, start in enumerate(starts):
+        chunk = dataset[start:start+context_length+1]
+        inputs[i] = chunk[:-1]
+        targets[i] = chunk[1:]
+
+    inputs = torch.from_numpy(inputs).to(device)
+    targets = torch.from_numpy(targets).to(device)
+    return inputs, targets
+
+def save_checkpoint(model, optimizer, iteration, out):
+    output = {}
+    output.update({"model":model.state_dict()})
+    output.update({"optimizer":optimizer.state_dict()})
+    output.update({"iteration": iteration})
+    torch.save(output, out)
+
+def load_checkpoint(src, model, optimizer):
+    state = torch.load(src)
+    model.load_state_dict(state["model"])
+    optimizer.load_state_dict(state["optimizer"])
+    return state["iteration"]
 
 
 
