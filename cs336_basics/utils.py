@@ -17,7 +17,7 @@ def cross_entropy(inputs:torch.Tensor, targets:torch.Tensor):
 
     inputs = inputs - inputs.max(dim=-1, keepdim=True).values
     gt_scores = torch.gather(inputs, dim=-1, index=targets.unsqueeze(-1))
-    return -(gt_scores - torch.logsumexp(inputs, dim=-1)).mean()
+    return -(gt_scores - torch.logsumexp(inputs, dim=-1, keepdim=True)).mean()
 
 def lr_cosine_schedule(
     it: int,
@@ -44,6 +44,7 @@ def gradient_clipping(parameters, max_l2_norm, eps=1e-6):
         for parameter in parameters:
             if parameter.grad is not None:
                 parameter.grad.data *= (max_l2_norm / (l2_norm + eps))
+    return l2_norm
 
 def get_batch(dataset, batch_size, context_length, device):
     inputs = np.zeros((batch_size, context_length))
@@ -56,8 +57,8 @@ def get_batch(dataset, batch_size, context_length, device):
         inputs[i] = chunk[:-1]
         targets[i] = chunk[1:]
 
-    inputs = torch.from_numpy(inputs).to(device)
-    targets = torch.from_numpy(targets).to(device)
+    inputs = torch.from_numpy(inputs).long().to(device)
+    targets = torch.from_numpy(targets).long().to(device)
     return inputs, targets
 
 def save_checkpoint(model, optimizer, iteration, out):
@@ -72,6 +73,8 @@ def load_checkpoint(src, model, optimizer):
     model.load_state_dict(state["model"])
     optimizer.load_state_dict(state["optimizer"])
     return state["iteration"]
+
+
 
 
 

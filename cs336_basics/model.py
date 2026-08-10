@@ -18,6 +18,9 @@ class Linear(nn.Module):
         self.out_features = out_feature
         self.weight = nn.Parameter(torch.empty(self.out_features, self.in_features, **kwargs))
 
+        std = 2/(in_features+out_feature)
+        torch.nn.init.trunc_normal_(self.weight, mean=0, std=std, a=-3*std, b=3*std)
+
     def forward(self, x:Tensor)-> Tensor:
         return einsum(x, self.weight, "... din, dout din -> ... dout")
 
@@ -29,6 +32,7 @@ class Embedding(nn.Module):
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
         self.weight = nn.Parameter(torch.empty((self.num_embeddings, self.embedding_dim), **kwargs))
+        torch.nn.init.trunc_normal_(self.weight, mean=0, std=1, a=-3, b=3)
 
     def forward(self, token_ids:Tensor) -> Tensor:
         return self.weight[token_ids]
@@ -40,7 +44,7 @@ class RMSNorm(nn.Module):
         kwargs = {"device":device, "dtype":dtype}
         self.eps = eps
         self.d_model = d_model
-        self.weight = nn.Parameter(torch.empty(d_model, **kwargs))
+        self.weight = nn.Parameter(torch.ones(d_model, **kwargs))
 
     def forward(self, x:Tensor) -> Tensor:
         in_dtype = x.dtype
@@ -154,7 +158,7 @@ class MultiHeadAttention(nn.Module):
             Q = self.rope(Q, token_positions)
             K = self.rope(K, token_positions)
         
-        mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool))
+        mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device))
         attn_output = scaled_dot_product_attention(Q, K, V, mask=mask)
         attn_output = rearrange(attn_output, "... h seq d_h -> ... seq (h d_h)")
 
@@ -226,9 +230,43 @@ class TransformerLM(nn.Module):
         x = self.ffn(x)
         return x
 
+    @torch.no_grad()
+    def generate(
+        self,
+        x: torch.Tensor,
+        max_new_tokens: int,
+        temperature: float = 1.0,
+        top_k: int | None = None,
+        eos_token_id: int = 256,
+    ):
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
+        outputs = x
+        for _ in range(max_new_tokens):
+            logits = self.forward(outputs)[:, -1]
+            scores = softmax(logits/temperature, dim=-1)
+            values, indices = scores.sort(dim=-1, descending=True)
+            cum_values = torch.cumsum(values, dim=-1)
+            idx = torch.nonzero(cum_values[0]>=top_k)[0].item()
+            values[idx+1:] = float('-inf')
+            sampled_token_id = indices[:, torch.multinomial(values, num_samples=1).item()].unsqueeze(0)
+            outputs = torch.cat((outputs, sampled_token_id), dim=-1)
+            if sampled_token_id == eos_token_id:
+                break
+
+        return  outputs
+
+    @classmethod
+    def from_file(cls, model_config, src):
+        model = cls(**model_config)
+        state_dict = torch.load(src, weights_only=True)['model']
+        model.load_state_dict(state_dict)
+        return model
+
+
 class AdamW(torch.optim.Optimizer):
 
-    def __init__(self, params, lr, betas=(0.9, 0.999), weight_decay=0.01, eps=1e-8):
+    def __init__(self, params, lr=1e-4, betas=(0.9, 0.999), weight_decay=0.01, eps=1e-8):
         if lr < 0:
             raise ValueError(f"Invalid learning rate: {lr}")
         defaults = {"lr": lr, "beta1":betas[0], 'beta2':betas[1], "weight_decay":weight_decay, "eps":eps}
