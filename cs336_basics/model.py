@@ -185,7 +185,7 @@ class TransformerBlock(nn.Module):
         self.rmsnorm2 = RMSNorm(d_model, **kwargs)
 
     def forward(self, x:Tensor):
-        token_position = torch.arange(x.shape[-2])
+        token_position = torch.arange(x.shape[-2], device=x.device)
         residual = x
         x = self.rmsnorm1(x)
         x = self.mha(x, token_position, use_rope=True)
